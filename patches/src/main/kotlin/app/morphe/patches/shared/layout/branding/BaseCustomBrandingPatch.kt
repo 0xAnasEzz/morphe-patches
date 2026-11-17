@@ -58,6 +58,7 @@ private val iconStyleNames = arrayOf(
     "light",
     "play",
     "play_black",
+    "play_dark",
 )
 
 private const val ORIGINAL_USER_ICON_STYLE_NAME = "original"
