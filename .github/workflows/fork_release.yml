@@ -1,0 +1,189 @@
+# Fork-only release pipeline. Every push to `dev` publishes a signed pre-release that reaches
+# Morphe Manager users of this fork, without any manual step:
+#
+#   version -> test -> build + sign -> verify signature -> GitHub release -> patches-bundle.json
+#
+# The version is the upstream version in gradle.properties plus `.fork.N` (`-fork.N` for a stable
+# upstream version), N counting up per upstream version, so every release is newer than the last.
+# Nothing is committed except patches-bundle.json, the file Morphe Manager reads from `dev`.
+#
+# Requires the MORPHE_SIGNING_KEY secret, matching morphe-signing.pub.
+
+name: Fork release
+
+on:
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+
+# Releases run one at a time, so two pushes can never publish the same version. Shared with the
+# fork sync, so a release never runs while `dev` is being rewritten.
+concurrency:
+  group: fork-pipeline
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release
+    # Never runs upstream if this file ever ends up in a pull request there.
+    if: github.repository_owner != 'MorpheApp'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # The latest `dev`, not the pushed commit: the fork sync may have rebased it since.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Determine version
+        id: version
+        run: |
+          base=$(sed -n 's/^version *= *//p' gradle.properties | tr -d '\r')
+          if [[ "$base" == *-* ]]; then prefix="$base.fork."; else prefix="$base-fork."; fi
+
+          last=$(git tag -l "v${prefix}*" | awk -F. '{print $NF}' | grep -E '^[0-9]+$' | sort -n | tail -1 || true)
+          version="${prefix}$(( ${last:-0} + 1 ))"
+
+          previous=$(git tag -l 'v*fork*' --sort=-v:refname | head -1)
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+          echo "Releasing v$version (previous fork release: ${previous:-none})"
+
+      - name: Setup Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Cache Gradle
+        uses: burrunan/gradle-cache-action@v3
+
+      - name: Test
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./gradlew :patches:test :extensions:youtube:testDebugUnitTest :extensions:music:testDebugUnitTest --no-daemon
+
+      # buildAndroid adds DEX to the jar in place and signs it, so it must run last.
+      - name: Build and sign
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MORPHE_SIGNING_KEY: ${{ secrets.MORPHE_SIGNING_KEY }}
+        run: ./gradlew :patches:buildAndroid -Pversion=${{ steps.version.outputs.version }} --no-daemon
+
+      - name: Verify signature
+        id: bundle
+        run: |
+          file="patches/build/libs/patches-${{ steps.version.outputs.version }}.mpp"
+          python3 - "$file" "$(tr -d '\r\n' < morphe-signing.pub)" <<'EOF'
+          import sys
+          path, key = sys.argv[1], sys.argv[2]
+          data = open(path, "rb").read()
+          eocd = data.rfind(b"PK\x05\x06")
+          comment_length = int.from_bytes(data[eocd + 20:eocd + 22], "little")
+          comment = data[eocd + 22:eocd + 22 + comment_length].decode("ascii", "replace").split(" ")
+          if len(comment) != 3 or comment[0] != "MorpheSig1":
+              sys.exit(f"{path} is not signed. Is the MORPHE_SIGNING_KEY secret set?")
+          if comment[1] != key:
+              sys.exit(f"{path} is signed with {comment[1]}, not the key in morphe-signing.pub")
+          print(f"Signed with {key}")
+          EOF
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+
+      - name: Write release notes
+        run: |
+          previous="${{ steps.version.outputs.previous }}"
+          # Commits are compared by content, as the fork sync rebases the fork's own commits.
+          if [ -n "$previous" ]; then
+            git log --no-merges --cherry-pick --right-only --format='%s%x09%h' "$previous...HEAD" > commits.txt
+          else
+            git log --no-merges --format='%s%x09%h' HEAD > commits.txt
+          fi
+
+          python3 - "${{ github.repository }}" commits.txt > notes.md <<'EOF'
+          import re, sys
+          repo, commits = sys.argv[1], sys.argv[2]
+          sections = {"feat": "✨ New Features", "perf": "🔧 Improvements", "fix": "🐛 Bug Fixes",
+                      "bump": "🚀 Updated App Support"}
+          found = {title: [] for title in sections.values()}
+          for line in open(commits, encoding="utf-8").read().splitlines():
+              subject, sha = line.rsplit("\t", 1)
+              match = re.match(r"(\w+)(?:\(([^)]*)\))?!?: (.+)", subject)
+              if not match or match[1] not in sections:
+                  continue
+              scope = f"**{match[2]}:** " if match[2] else ""
+              found[sections[match[1]]].append(
+                  f"* {scope}{match[3]} ([{sha}](https://github.com/{repo}/commit/{sha}))")
+          parts = [f"### {title}\n\n" + "\n".join(items) for title, items in found.items() if items]
+          print("\n\n".join(parts) or "Maintenance release.")
+          EOF
+          cat notes.md
+
+      # The release commits at the tip of `dev` only update patches-bundle.json. The release is
+      # tagged on the commit below them, and they are replaced by this release's commit.
+      - name: Find release commit
+        id: commit
+        run: |
+          commit=$(git rev-parse HEAD)
+          while [ "$(git diff-tree --no-commit-id --name-only -r "$commit")" = "patches-bundle.json" ]; do
+            commit=$(git rev-parse "$commit^")
+          done
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          git log -1 --format='Releasing %h %s' "$commit"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          gh release create "v$version" "${{ steps.bundle.outputs.file }}" \
+            --target "${{ steps.commit.outputs.commit }}" --prerelease --title "v$version" --notes-file notes.md
+
+      # Morphe Manager reads this file from `dev` to find and verify updates.
+      - name: Update patches-bundle.json
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          created_at=$(date -u +%Y-%m-%dT%H:%M:%S)
+          description=$(printf '## [%s](https://github.com/%s/releases/tag/v%s) (%s)\n\n%s' \
+            "$version" "$GITHUB_REPOSITORY" "$version" "${created_at%%T*}" "$(cat notes.md)")
+
+          jq --arg created_at "$created_at" \
+             --arg description "$description" \
+             --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/v$version/patches-$version.mpp" \
+             --arg version "$version" \
+             --arg key "$(tr -d '\r\n' < morphe-signing.pub)" \
+             '.created_at = $created_at | .description = $description | .download_url = $url
+              | .signature_download_url = "" | .version = $version | .public_key = $key' \
+             patches-bundle.json > "$RUNNER_TEMP/patches-bundle.json"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          commit_bundle() {
+            cp "$RUNNER_TEMP/patches-bundle.json" patches-bundle.json
+            git add patches-bundle.json
+            git commit --quiet -m "chore: Release v$version [skip ci]"
+          }
+
+          # Replaces the previous release commits at the tip, so `dev` keeps a single one.
+          head=$(git rev-parse HEAD)
+          release_commit="${{ steps.commit.outputs.commit }}"
+          if [ "$head" != "$release_commit" ]; then
+            git reset --quiet --soft "$release_commit"
+            commit_bundle
+            git push --force-with-lease="refs/heads/dev:$head" origin HEAD:dev && exit 0
+            # Something was pushed since, so the release commit is added on top of it instead.
+            git fetch --quiet origin dev
+            git reset --quiet --hard origin/dev
+          fi
+          commit_bundle
+
+          # A push that landed while this ran is kept, and released by its own run afterwards.
+          for attempt in 1 2 3; do
+            git push origin HEAD:dev && exit 0
+            git pull --rebase origin dev
+          done
+          exit 1
