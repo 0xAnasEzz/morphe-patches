@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+    <!-- Path must be white to ensure the icon appears white in the expanded status bar panel. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M43,256a213,213 0,1 0,426 0a213,213 0,1 0,-426 0z
+            M144.659,256a111.341,111.341 0,1 0,222.682 0a111.341,111.341 0,1 0,-222.682 0z
+            M154.341,256a101.659,101.659 0,1 0,203.318 0a101.659,101.659 0,1 0,-203.318 0z
+            M217.273,311.670L311.670,253.580L217.273,200.330z"/>
+</vector>
