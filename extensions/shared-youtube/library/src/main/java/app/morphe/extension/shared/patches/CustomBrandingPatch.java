@@ -56,6 +56,7 @@ public class CustomBrandingPatch {
         PLAY,
         PLAY_BLACK,
         PLAY_DARK,
+        MUSIC_DARK,
         /**  User provided custom icon. */
         CUSTOM,
         /**
@@ -112,7 +113,7 @@ public class CustomBrandingPatch {
         String startupAnimationResourceName() {
             return switch (this) {
                 case LIGHT, DARK, BLACK -> "morphe_startup_animation";
-                case PLAY, PLAY_BLACK, PLAY_DARK -> "morphe_startup_animation_play";
+                case PLAY, PLAY_BLACK, PLAY_DARK, MUSIC_DARK -> "morphe_startup_animation_play";
                 default -> null;
             };
         }
@@ -159,6 +160,7 @@ public class CustomBrandingPatch {
         PLAY,
         PLAY_BLACK,
         PLAY_DARK,
+        MUSIC_DARK,
         /** * User provided custom PNG notification icon. */
         CUSTOM;
 
@@ -267,7 +269,7 @@ public class CustomBrandingPatch {
     public static boolean iconIsPlay() {
         BrandingTheme branding = getLauncherIconBranding();
         return branding == BrandingTheme.PLAY || branding == BrandingTheme.PLAY_BLACK
-                || branding == BrandingTheme.PLAY_DARK;
+                || branding == BrandingTheme.PLAY_DARK || branding == BrandingTheme.MUSIC_DARK;
     }
 
     /**

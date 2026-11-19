@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A disc with a ring and a play button cut out, in the colors of the 'Play dark' foreground. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+
+    <group
+        android:scaleX="0.45"
+        android:scaleY="0.45"
+        android:translateX="140.8"
+        android:translateY="140.8">
+
+        <!-- Disc, outer and inner edge of the ring, and the play button. Even-odd filling cuts
+             the ring and the play button out of the disc. -->
+        <path
+            android:fillType="evenOdd"
+            android:pathData="M0,256a256,256 0,1 0,512 0a256,256 0,1 0,-512 0z
+                M119.273,256a136.727,136.727 0,1 0,273.455 0a136.727,136.727 0,1 0,-273.455 0z
+                M136.727,256a119.273,119.273 0,1 0,238.545 0a119.273,119.273 0,1 0,-238.545 0z
+                M209.455,322.909L322.909,253.091L209.455,189.091z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:endX="458"
+                    android:endY="412"
+                    android:startX="54"
+                    android:startY="100"
+                    android:type="linear">
+                    <item
+                        android:color="#1E5AA8"
+                        android:offset="0" />
+                    <item
+                        android:color="#00AFAE"
+                        android:offset="1" />
+                </gradient>
+            </aapt:attr>
+        </path>
+    </group>
+</vector>
