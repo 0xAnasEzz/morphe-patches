@@ -10,12 +10,12 @@ group = "app.morphe"
 patches {
     about {
         // Pull request builds pass -PpatchesName to tell test builds apart from releases.
-        name = providers.gradleProperty("patchesName").getOrElse("Morphe Patches")
+        name = providers.gradleProperty("patchesName").getOrElse("Anas Patches")
         description = "Patches for Morphe"
-        source = "git@github.com:MorpheApp/morphe-patches.git"
-        author = "MorpheApp"
+        source = "git@github.com:0xAnasEzz/morphe-patches.git"
+        author = "0xAnasEzz"
         contact = "na"
-        website = "https://morphe.software"
+        website = "https://github.com/0xAnasEzz/morphe-patches"
         license = "GNU General Public License v3.0, with additional GPL section 7 requirements"
     }
 }
