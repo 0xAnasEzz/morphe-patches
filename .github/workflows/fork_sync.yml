@@ -1,0 +1,160 @@
+# Fork-only: rebases this fork's commits onto upstream `dev` every hour, then starts a fork release,
+# so upstream changes reach Morphe Manager users of this fork without any manual step.
+#
+# `dev` always stays upstream `dev` + the fork's own commits + one patches-bundle.json commit:
+# - The fork's commits are replayed in order with their authors, committers and dates. Commits upstream already has are
+#   dropped, and the patches-bundle.json commits of releases are collapsed into one at the end.
+# - `dev` is rewritten with a force push, so pull with `git pull --rebase` afterwards.
+# - A conflict stops the sync, and the run fails with the conflicting commit and files listed.
+#   Rebase by hand, push, and the hourly sync carries on from there.
+# - A push made with the default token cannot change files in .github/workflows. To sync upstream
+#   changes to workflow files too, add a SYNC_TOKEN secret: a fine-grained personal access token
+#   for this repository with Contents and Workflows read and write access.
+
+name: Fork sync
+
+on:
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+
+# Shared with the fork release, so a release never runs while `dev` is being rewritten.
+concurrency:
+  group: fork-pipeline
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync with upstream dev
+    if: github.repository_owner != 'MorpheApp'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    env:
+      UPSTREAM: https://github.com/MorpheApp/morphe-patches.git
+      BUNDLE: patches-bundle.json
+      HAS_SYNC_TOKEN: ${{ secrets.SYNC_TOKEN != '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: dev
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Rebase onto upstream dev
+        id: sync
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "$UPSTREAM"
+
+          # fail <title> <markdown details>
+          fail() {
+            printf '### %s\n\n%s\n' "$1" "$2" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::$1"
+            exit 1
+          }
+          as_list() { sed 's/^/- `/; s/$/`/'; }
+
+          # Rebuilds `dev` on upstream. Returns 1 if there is nothing to sync.
+          sync() {
+            git fetch --quiet origin dev
+            git fetch --quiet --no-tags upstream dev
+            git checkout --quiet -B dev origin/dev
+            old=$(git rev-parse HEAD)
+
+            if git merge-base --is-ancestor upstream/dev "$old"; then
+              return 1
+            fi
+
+            base=$(git merge-base "$old" upstream/dev)
+            git checkout --quiet --detach upstream/dev
+
+            # Commits keep their original committer and commit date, not just their author.
+            keep_committer() {
+              export GIT_COMMITTER_NAME=$(git log -1 --format=%cn "$1")
+              export GIT_COMMITTER_EMAIL=$(git log -1 --format=%ce "$1")
+              export GIT_COMMITTER_DATE=$(git log -1 --format=%cI "$1")
+            }
+
+            release_commit=
+            for commit in $(git rev-list --reverse --no-merges "$base..$old"); do
+              # Release commits only update the bundle, which is written once at the end.
+              if [ "$(git diff-tree --no-commit-id --name-only -r "$commit")" = "$BUNDLE" ]; then
+                release_commit=$commit
+                continue
+              fi
+              keep_committer "$commit"
+              if git cherry-pick "$commit" > /dev/null 2>&1; then
+                continue
+              fi
+              conflicts=$(git diff --name-only --diff-filter=U)
+              if [ -z "$conflicts" ]; then
+                # Upstream already has this change, so the commit became empty.
+                git cherry-pick --skip
+                continue
+              fi
+              if [ "$conflicts" = "$BUNDLE" ]; then
+                git checkout --quiet --ours "$BUNDLE"
+                git add "$BUNDLE"
+                git -c core.editor=true cherry-pick --continue > /dev/null || git cherry-pick --skip
+                continue
+              fi
+              git cherry-pick --abort
+              fail "Upstream dev could not be synced automatically" \
+                "$(printf 'Rebase `dev` onto upstream `dev` by hand and push. Commit %s conflicts in:\n\n%s' \
+                  "$(git log -1 --format='`%h` %s' "$commit")" "$(echo "$conflicts" | as_list)")"
+            done
+            unset GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE
+
+            # The bundle keeps pointing at the latest fork release, until the next release updates it.
+            # Its commit is the latest release commit, with that commit's message, author and committer.
+            git checkout --quiet "$old" -- "$BUNDLE"
+            if ! git diff --cached --quiet; then
+              if [ -n "$release_commit" ]; then
+                keep_committer "$release_commit"
+                git commit --quiet --reuse-message="$release_commit"
+                unset GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE
+              else
+                git commit --quiet --author="github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>" \
+                  -m "chore: Release v$(jq -r .version "$BUNDLE") [skip ci]"
+              fi
+            fi
+
+            if [ "$HAS_SYNC_TOKEN" != "true" ] && ! git diff --quiet "$old" HEAD -- .github/workflows; then
+              fail "Upstream changed workflow files" \
+                "$(printf 'The default token cannot push changes to `.github/workflows`. Rebase `dev` by hand, or add a `SYNC_TOKEN` secret (see fork_sync.yml).\n\n%s' \
+                  "$(git diff --name-only "$old" HEAD -- .github/workflows | as_list)")"
+            fi
+            return 0
+          }
+
+          for attempt in 1 2 3; do
+            if ! sync; then
+              echo "Already up to date with upstream dev"
+              echo "synced=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # Refused if anything was pushed to `dev` since it was fetched, which is then synced too.
+            if git push --force-with-lease="refs/heads/dev:$old" origin HEAD:dev; then
+              echo "synced=true" >> "$GITHUB_OUTPUT"
+              {
+                echo "Rebased onto upstream \`$(git rev-parse --short upstream/dev)\`. Fork commits:"
+                echo
+                git log --format='- `%h` %s' upstream/dev..HEAD
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          done
+          exit 1
+
+      # A push made with the default token does not start other workflows, and this one rewrote
+      # `dev` with nothing new of the fork's own, so the release is always started here.
+      - name: Start fork release
+        if: steps.sync.outputs.synced == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # The repository is named, or gh would pick the `upstream` remote added above.
+        run: gh workflow run fork_release.yml --ref dev --repo "$GITHUB_REPOSITORY"
