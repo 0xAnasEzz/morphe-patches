@@ -1,0 +1,229 @@
+# Fork-only: rebases this fork's commits onto upstream `dev` every hour, then starts a fork release,
+# so upstream changes reach Morphe Manager users of this fork without any manual step.
+#
+# `dev` always stays upstream `dev` + the fork's own commits + one release commit:
+# - The fork's commits are replayed in order with their authors, committers and dates. Commits upstream already has are
+#   dropped, and the commits of releases are collapsed into one at the end, which keeps the fork's patches-bundle.json
+#   and CHANGELOG.md over upstream's.
+# - `dev` is rewritten with a force push, so pull with `git pull --rebase` afterwards.
+# - A conflict stops the sync, and the run fails with the conflicting commit and files listed.
+#   Rebase by hand, push, and the hourly sync carries on from there.
+#
+# SYNC_TOKEN secret (recommended):
+#   GitHub never lets the default GITHUB_TOKEN push commits that change files in .github/workflows,
+#   and no `permissions:` setting can allow it. Upstream's commits sometimes change its own
+#   workflows (disabled in this fork), and syncing means pushing those commits, so without a token
+#   such a sync stops with "Upstream changed workflow files" until `dev` is rebased by hand.
+#   With SYNC_TOKEN set, every upstream change syncs automatically, workflow files included.
+#
+#   1. GitHub > Settings > Developer settings > Personal access tokens > Fine-grained tokens >
+#      Generate new token.
+#   2. Repository access: Only select repositories > this fork.
+#   3. Repository permissions: Contents and Workflows, both Read and write.
+#   4. This repository > Settings > Secrets and variables > Actions > New repository secret,
+#      named SYNC_TOKEN, with the token as its value.
+#   Fine-grained tokens expire. Once it has, syncs fail to push until the secret holds a new one.
+
+name: Fork sync
+
+on:
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+
+# Shared with the fork release, so a release never runs while `dev` is being rewritten.
+concurrency:
+  group: fork-pipeline
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync with upstream dev
+    if: github.repository_owner != 'MorpheApp'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    env:
+      UPSTREAM: https://github.com/MorpheApp/morphe-patches.git
+      BUNDLE: patches-bundle.json
+      # The only files release commits change, all written by the fork release.
+      RELEASE_FILES: patches-bundle.json CHANGELOG.md
+      HAS_SYNC_TOKEN: ${{ secrets.SYNC_TOKEN != '' }}
+    steps:
+      # Pushes later use this token: SYNC_TOKEN when set, so workflow file changes can be pushed.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: dev
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Rebase onto upstream dev
+        id: sync
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "$UPSTREAM"
+
+          # fail <title> <markdown details>
+          fail() {
+            printf '### %s\n\n%s\n' "$1" "$2" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::$1"
+            exit 1
+          }
+          as_list() { sed 's/^/- `/; s/$/`/'; }
+          # Whether none of the files listed on stdin is outside the RELEASE_FILES.
+          only_release_files() { ! grep -qvxF "${RELEASE_FILES// /$'\n'}"; }
+
+          # Rebuilds `dev` on upstream. Returns 1 if there is nothing to sync.
+          sync() {
+            git fetch --quiet origin dev
+            git fetch --quiet --no-tags upstream dev
+            git checkout --quiet -B dev origin/dev
+            old=$(git rev-parse HEAD)
+
+            if git merge-base --is-ancestor upstream/dev "$old"; then
+              return 1
+            fi
+
+            base=$(git merge-base "$old" upstream/dev)
+            git checkout --quiet --detach upstream/dev
+
+            # Each replayed commit and its rebased copy, for moving the release tags afterwards.
+            moved="$RUNNER_TEMP/moved-commits.txt"
+            : > "$moved"
+
+            # Commits keep their original committer and commit date, not just their author.
+            keep_committer() {
+              export GIT_COMMITTER_NAME=$(git log -1 --format=%cn "$1")
+              export GIT_COMMITTER_EMAIL=$(git log -1 --format=%ce "$1")
+              export GIT_COMMITTER_DATE=$(git log -1 --format=%cI "$1")
+            }
+
+            release_commit=
+            for commit in $(git rev-list --reverse --no-merges "$base..$old"); do
+              # Release commits only change the release files, which are written once at the end.
+              if git diff-tree --no-commit-id --name-only -r "$commit" | only_release_files; then
+                release_commit=$commit
+                continue
+              fi
+              keep_committer "$commit"
+              if git cherry-pick "$commit" > /dev/null 2>&1; then
+                echo "$commit $(git rev-parse HEAD)" >> "$moved"
+                continue
+              fi
+              conflicts=$(git diff --name-only --diff-filter=U)
+              if [ -z "$conflicts" ]; then
+                # Upstream already has this change, so the commit became empty.
+                git cherry-pick --skip
+                continue
+              fi
+              if only_release_files <<< "$conflicts"; then
+                git checkout --quiet --ours -- $conflicts
+                git add -- $conflicts
+                if git -c core.editor=true cherry-pick --continue > /dev/null; then
+                  echo "$commit $(git rev-parse HEAD)" >> "$moved"
+                else
+                  git cherry-pick --skip
+                fi
+                continue
+              fi
+              git cherry-pick --abort
+              fail "Upstream dev could not be synced automatically" \
+                "$(printf 'Rebase `dev` onto upstream `dev` by hand and push. Commit %s conflicts in:\n\n%s' \
+                  "$(git log -1 --format='`%h` %s' "$commit")" "$(echo "$conflicts" | as_list)")"
+            done
+            unset GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE
+
+            # The bundle keeps pointing at the latest fork release, and the changelog keeps listing the
+            # fork's releases, until the next release updates them. Their commit is the latest release
+            # commit, with that commit's message, author and committer.
+            git checkout --quiet "$old" -- $RELEASE_FILES
+            if ! git diff --cached --quiet; then
+              if [ -n "$release_commit" ]; then
+                keep_committer "$release_commit"
+                git commit --quiet --reuse-message="$release_commit"
+                unset GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE
+              else
+                git commit --quiet --author="github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>" \
+                  -m "chore: Release v$(jq -r .version "$BUNDLE") [skip ci]"
+              fi
+            fi
+
+            # GitHub would refuse the push of the default token, so this explains why instead.
+            if [ "$HAS_SYNC_TOKEN" != "true" ] && ! git diff --quiet "$old" HEAD -- .github/workflows; then
+              fail "Upstream changed workflow files" \
+                "$(printf 'The default token cannot push changes to `.github/workflows`. Rebase `dev` by hand, or add a `SYNC_TOKEN` secret (see fork_sync.yml).\n\n%s' \
+                  "$(git diff --name-only "$old" HEAD -- .github/workflows | as_list)")"
+            fi
+            return 0
+          }
+
+          for attempt in 1 2 3; do
+            if ! sync; then
+              echo "Already up to date with upstream dev"
+              echo "synced=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # Refused if anything was pushed to `dev` since it was fetched, which is then synced too.
+            if git push --force-with-lease="refs/heads/dev:$old" origin HEAD:dev; then
+              echo "synced=true" >> "$GITHUB_OUTPUT"
+              {
+                echo "Rebased onto upstream \`$(git rev-parse --short upstream/dev)\`. Fork commits:"
+                echo
+                git log --format='- `%h` %s' upstream/dev..HEAD
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          done
+          exit 1
+
+      # Release tags on the fork's own commits follow them to their rebased copies, so every release
+      # keeps pointing at its commit on `dev`. The copies keep their commit dates, and GitHub orders
+      # releases by those, so the order is kept too. Links to those commits in the release notes and
+      # the targets the releases record are updated with them.
+      - name: Move release tags
+        if: steps.sync.outputs.synced == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+        run: |
+          moved="$RUNNER_TEMP/moved-commits.txt"
+          while read -r old new; do
+            for tag in $(git tag --points-at "$old" --list 'v*fork*'); do
+              git push --quiet --force-with-lease="refs/tags/$tag:$old" origin "$new:refs/tags/$tag"
+              release=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .id 2> /dev/null) || continue
+              gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release" -f target_commitish="$new" > /dev/null
+              echo "Moved $tag to $(git log -1 --format='%h %s' "$new")"
+            done
+          done < "$moved"
+
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[] | select(.tag_name | test("fork")) | .id' |
+          while read -r release; do
+            gh api "repos/$GITHUB_REPOSITORY/releases/$release" --jq .body > "$RUNNER_TEMP/notes.md"
+            if python3 - "$moved" "$RUNNER_TEMP/notes.md" <<'EOF'
+          import re, sys
+          moved = [line.split() for line in open(sys.argv[1]) if line.strip()]
+          path = sys.argv[2]
+          notes = original = open(path, encoding="utf-8").read()
+          for old, new in moved:
+              # Abbreviated hashes of any length from 7 characters, kept at the same length.
+              notes = re.sub(r"\b" + old[:7] + r"[0-9a-f]*\b",
+                             lambda m: new[:len(m.group())] if old.startswith(m.group()) else m.group(), notes)
+          open(path, "w", encoding="utf-8").write(notes)
+          sys.exit(0 if notes != original else 1)
+          EOF
+            then
+              gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release" -F body=@"$RUNNER_TEMP/notes.md" > /dev/null
+              echo "Updated commit links in the notes of release $release"
+            fi
+          done
+
+      # The pushed tip is the patches-bundle.json commit, whose [skip ci] keeps the push from starting
+      # the fork release, with either token. So the release is always started here.
+      - name: Start fork release
+        if: steps.sync.outputs.synced == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # The repository is named, or gh would pick the `upstream` remote added above.
+        run: gh workflow run fork_release.yml --ref dev --repo "$GITHUB_REPOSITORY"
