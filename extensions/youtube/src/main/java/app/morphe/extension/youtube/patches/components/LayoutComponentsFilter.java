@@ -55,7 +55,6 @@ import app.morphe.extension.youtube.innertube.FeedCardLayoutOuterClass.ElementMo
 import app.morphe.extension.youtube.innertube.FeedCardLayoutOuterClass.LockupViewModel;
 import app.morphe.extension.youtube.patches.ChangeHeaderPatch;
 import app.morphe.extension.youtube.patches.FeedViewCountPatch;
-import app.morphe.extension.youtube.patches.VersionCheckPatch;
 import app.morphe.extension.youtube.patches.utils.FeedVideoCardsPatch;
 import app.morphe.extension.youtube.patches.utils.ProtoNode;
 import app.morphe.extension.youtube.settings.Settings;
@@ -972,8 +971,7 @@ public final class LayoutComponentsFilter extends Filter {
             // Only the container of the label itself, in the metadata of a video. Badges are also used
             // outside the videos, such as in the rows of the menus, where a container that has a badge
             // can be the whole row.
-            return VersionCheckPatch.IS_20_31_OR_GREATER
-                    && Utils.contains(path, "lockup_metadata.e")
+            return Utils.contains(path, "lockup_metadata.e")
                     && videoLabelsBuffer.check(buffer).isFiltered()
                     && Utils.startsWith(asciiStrings.getStrings(), "badge.e")
                     && isVideoLabelBadge(buffer);
