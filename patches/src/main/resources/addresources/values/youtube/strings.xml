@@ -1033,6 +1033,10 @@ To fix this, turn on \'Spoof video streams\' and change the \'Default client\' t
     <string name="morphe_tap_to_seek_title">Enable tap to seek</string>
     <string name="morphe_tap_to_seek_summary">Tap anywhere on the seekbar to jump to that position instead of dragging</string>
 
+    <!-- interaction.seekbar.smoothSeekbarPatch -->
+    <string name="morphe_smooth_seekbar_title">Enable smooth seekbar</string>
+    <string name="morphe_smooth_seekbar_summary">The seekbar progress moves continuously while the video plays, instead of jumping once per second</string>
+
     <!-- interaction.seekbar.customSeekbarThumbPatch -->
     <string name="morphe_custom_seekbar_thumb_title">Enable custom seekbar thumb</string>
     <string name="morphe_custom_seekbar_thumb_summary">Replace the seekbar thumb with a custom image or animated GIF</string>

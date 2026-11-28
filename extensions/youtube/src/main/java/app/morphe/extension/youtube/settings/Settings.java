@@ -869,6 +869,7 @@ public class Settings extends SharedYouTubeSettings {
     public static final StringSetting SEEKBAR_CUSTOM_COLOR_PRIMARY = new StringSetting("morphe_seekbar_custom_color_primary", "#FF0033", true, parent(SEEKBAR_CUSTOM_COLOR));
     public static final StringSetting SEEKBAR_CUSTOM_COLOR_ACCENT = new StringSetting("morphe_seekbar_custom_color_accent", "#FF2791", true, parent(SEEKBAR_CUSTOM_COLOR));
     public static final BooleanSetting SLIDE_TO_SEEK = new BooleanSetting("morphe_slide_to_seek", FALSE, true);
+    public static final BooleanSetting SMOOTH_SEEKBAR = new BooleanSetting("morphe_smooth_seekbar", FALSE);
     public static final BooleanSetting TAP_TO_SEEK = new BooleanSetting("morphe_tap_to_seek", FALSE);
     public static final BooleanSetting THUMBNAIL_PREVIEW = new BooleanSetting("morphe_seekbar_thumbnail_preview", TRUE);
     public static final BooleanSetting CUSTOM_SEEKBAR_THUMB = new BooleanSetting("morphe_custom_seekbar_thumb", FALSE);
